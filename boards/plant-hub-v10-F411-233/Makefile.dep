@@ -1,0 +1,2 @@
+USEMODULE += at86rf233
+USEMODULE += at24c02
