@@ -5,14 +5,15 @@ APPLICATION = plant-hub-app
 BOARD ?= plant-hub-v10-F411-233
 
 # Use modules for networking
-# use the default network interface for the board
 USEMODULE += gnrc
 USEMODULE += netdev_default
-# automatically initialize the network interface
 USEMODULE += auto_init_gnrc_netif
+USEMODULE += gnrc_ipv6_router_default
+USEMODULE += gnrc_rpl
+USEMODULE += gnrc_udp
 
+# Peripherals
 USEMODULE += ztimer
-USEMODULE += ztimer_sec
 USEMODULE += ztimer_msec
 
 USEMODULE += periph_adc

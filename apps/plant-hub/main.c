@@ -2,10 +2,17 @@
 #include <string.h>
 
 #include "board.h"
+
 #include "ztimer.h"
+#include "thread.h"
+
 #include "net/gnrc.h"
 #include "net/gnrc/netif.h"
-#include "thread.h"
+#include "net/gnrc/netapi.h"
+#include "net/gnrc/ipv6.h"
+#include "net/gnrc/rpl.h"
+#include "net/gnrc/udp.h"
+
 #include "periph/adc.h"
 #include "periph/rtc.h"
 #include "periph/gpio.h"
@@ -35,6 +42,8 @@
 #define TYPE                        0xA3  // Packet
 #define VERSION                     1
 
+#define UDP_PORT                    7421
+
 /* ---- Global variables ---- */
 
 at24cxxx_t eeprom_dev;
@@ -49,11 +58,9 @@ static char _calibration_stack[THREAD_STACKSIZE_MEDIUM];
 kernel_pid_t sensor_thread_pid = KERNEL_PID_UNDEF;
 static char _sensor_stack[THREAD_STACKSIZE_LARGE];
 
-netif_t *netif = NULL;
-
 uint16_t sensor_connected_bitmap = 0b0000000000000000; // For every sensor connected, the corresponding bit is set to 1
 uint16_t sensor_calibration_bitmap = 0b0000000000000000; // For every sensor calibrated, the corresponding bit is set to 1
-uint16_t sensor_data[12]; // Array to store the latest sensor data for each port
+uint16_t sensor_data[12] = {0}; // Array to store the latest sensor data for each port
 
 typedef struct
 {
@@ -552,18 +559,71 @@ static uint16_t _calculate_relative_soil_moisture(uint16_t raw, uint16_t dry, ui
 }
 
 
+static void _udp_send(netif_t *netif, ipv6_addr_t addr, uint16_t port, uint8_t *data, size_t data_len)
+{
+    gnrc_pktsnip_t *payload, *udp, *ip;
+
+    /* allocate payload */
+    payload = gnrc_pktbuf_add(NULL, data, data_len, GNRC_NETTYPE_UNDEF);
+    if (payload == NULL)
+    {
+        printf("Error: unable to copy data to packet buffer\n");
+        return;
+    }
+    /* allocate UDP header, set source port := destination port */
+    udp = gnrc_udp_hdr_build(payload, port, port);
+    if (udp == NULL)
+    {
+        printf("Error: unable to allocate UDP header\n");
+        gnrc_pktbuf_release(payload);
+        return;
+    }
+    /* allocate IPv6 header */
+    ip = gnrc_ipv6_hdr_build(udp, NULL, &addr);
+    if (ip == NULL)
+    {
+        printf("Error: unable to allocate IPv6 header\n");
+        gnrc_pktbuf_release(udp);
+        return;
+    }
+    /* add netif header, if interface was given */
+    if (netif != NULL)
+    {
+        gnrc_pktsnip_t *netif_hdr = gnrc_netif_hdr_build(NULL, 0, NULL, 0);
+        if (netif_hdr == NULL)
+        {
+            printf("Error: unable to allocate netif header\n");
+            gnrc_pktbuf_release(ip);
+            return;
+        }
+        gnrc_netif_hdr_set_netif(netif_hdr->data, container_of(netif, gnrc_netif_t, netif));
+        ip = gnrc_pkt_prepend(ip, netif_hdr);
+    }
+    /* send packet */
+    if (!gnrc_netapi_dispatch_send(GNRC_NETTYPE_UDP, GNRC_NETREG_DEMUX_CTX_ALL, ip))
+    {
+        printf("Error: unable to locate UDP thread\n");
+        gnrc_pktbuf_release(ip);
+        return;
+    }
+}
+
 static void *sensor_thread(void *arg)
 {
-    (void) arg;
-
     msg_t ipc_msg;
     msg_t ipc_msg_queue[4];
 
     /* Setup the message queue */
     msg_init_queue(ipc_msg_queue, 4);
 
-    uint8_t pause_requested = 0;
+    netif_t *netif = (netif_t *) arg;
 
+    // Parse global address and initialize RPL
+    ipv6_addr_t ipv6_glob_addr;
+    const char *str_addr = "2001:db8::1";
+    ipv6_addr_from_str(&ipv6_glob_addr, str_addr);
+
+    uint8_t pause_requested = 0;
     uint8_t cur_port = 0; // Start at port 0
 
     while (1)
@@ -671,7 +731,9 @@ static void *sensor_thread(void *arg)
             rf_msg.sensor_connected_bitmap = sensor_connected_bitmap;
             memcpy(rf_msg.sensor_values, sensor_data, sizeof(sensor_data));
 
-            // TODO: Send
+            printf("TX\n");
+
+            _udp_send(netif, ipv6_glob_addr, UDP_PORT, (uint8_t *) &rf_msg, sizeof(rf_msg));
         }
     }
 
@@ -703,11 +765,17 @@ void initialize_buttons(void)
 
 int main(void)
 {
-    netif = netif_iter(NULL);
+    // Initialize network interface
+    netif_t *netif = netif_iter(NULL);
 
+    // Initialize RPL
+    gnrc_rpl_init(netif_get_id(netif));
+
+    // Initialize ADCs and buttons
     initialize_adcs();
     initialize_buttons();
 
+    // Initialize EEPROM
     int res = at24cxxx_init(&eeprom_dev, &eeprom_params);
 
     if (res != AT24CXXX_OK) {
@@ -721,7 +789,7 @@ int main(void)
     /* Create sensor thread */
     sensor_thread_pid = thread_create(_sensor_stack, sizeof(_sensor_stack), THREAD_PRIORITY_MAIN + 3,
                                       THREAD_CREATE_STACKTEST,
-                                      sensor_thread, NULL, "sensor_thread");
+                                      sensor_thread, (void *) netif, "sensor_thread");
 
     /* Create calibration thread */
     calibration_thread_pid = thread_create(_calibration_stack, sizeof(_calibration_stack), THREAD_PRIORITY_MAIN + 2,
