@@ -144,7 +144,7 @@ static const adc_conf_t adc_config[] = {
  */
 #define AT24CXXX_PARAM_I2C              I2C_DEV(0)
 #define AT24CXXX_PARAM_ADDR             0x50
-#define AT24CXXX_PARAM_PIN_WP           GPIO_UNDEF
+#define AT24CXXX_PARAM_PIN_WP           GPIO_PIN(PORT_B, 10)
 /** @} */
 
 #ifdef __cplusplus

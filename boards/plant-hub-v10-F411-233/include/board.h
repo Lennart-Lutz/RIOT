@@ -89,8 +89,8 @@ extern "C" {
 #define ST2_LED_BLUE_PIN              GPIO_PIN(PORT_D, 3)
 
 // Calibration buttons pins
-#define CALIB_BUTTON_A_PIN            GPIO_PIN(PORT_B, 12)
-#define CALIB_BUTTON_B_PIN            GPIO_PIN(PORT_B, 13)
+#define CALIB_BUTTON_A_PIN            GPIO_PIN(PORT_B, 13)
+#define CALIB_BUTTON_B_PIN            GPIO_PIN(PORT_B, 12)
 
 // Calibration indicator LED RGB pins
 #define CALIB_LED_RED_PIN              GPIO_PIN(PORT_E, 13)
