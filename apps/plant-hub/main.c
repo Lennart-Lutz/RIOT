@@ -38,11 +38,12 @@
 #define BTN_DEBOUNCE_MS             100
 
 // Platform specific defines
-#define MAGIC                       0x4F
-#define TYPE                        0xA3  // Packet
+#define MAGIC                       0x4F // Magic byte to identify the network
+
+#define TYPE                        0xA3
 #define VERSION                     1
 
-#define UDP_PORT                    7421
+#define UDP_PORT                    0x7421
 
 /* ---- Global variables ---- */
 
@@ -65,8 +66,11 @@ uint16_t sensor_data[12] = {0}; // Array to store the latest sensor data for eac
 typedef struct
 {
     uint8_t magic;
-    uint8_t type;
-    uint8_t version;
+    uint8_t type; // Type of this message (here: Plant Hub message type)
+    uint8_t version; // Version of this message
+    uint16_t id; // Unique Node ID (MAC Address)
+    uint16_t rank; // RPL rank of the node
+    
     uint16_t sensor_connected_bitmap; // Bitmap indicating which sensors are connected
     uint16_t sensor_calibration_bitmap; // Bitmap indicating which sensors are calibrated
     uint16_t sensor_values[12]; // Latest sensor values for each port
@@ -618,7 +622,7 @@ static void *sensor_thread(void *arg)
 
     netif_t *netif = (netif_t *) arg;
 
-    // Parse global address and initialize RPL
+    // Parse global address (of sink node)
     ipv6_addr_t ipv6_glob_addr;
     const char *str_addr = "2001:db8::1";
     ipv6_addr_from_str(&ipv6_glob_addr, str_addr);
@@ -715,6 +719,8 @@ static void *sensor_thread(void *arg)
         // Put into data array
         sensor_data[cur_port] = value;
 
+        printf("Port %u: Raw value = %u, Calibrated value = %u, Dry = %u, Wet = %u\n", cur_port, (uint16_t) average, value, cal_dry, cal_wet);
+
         // Turn off the current port
         gpio_set(ports[cur_port].pwr_pin);
         cur_port = (cur_port + 1) % 12; // Move to the next port for the next iteration
@@ -724,14 +730,23 @@ static void *sensor_thread(void *arg)
         {
             rf_message_t rf_msg;
 
+            // Get Node ID (MAC Address)
+            uint8_t mac_addr[2];
+            netif_get_opt(netif, NETOPT_ADDRESS, 0, mac_addr, sizeof(mac_addr));
+
+            // Get RPL rank
+            gnrc_rpl_instance_t *rpl_instance = gnrc_rpl_instance_get(1); // Instance is 1
+            gnrc_rpl_dodag_t *dodag = &rpl_instance->dodag;
+            uint16_t rank = dodag->my_rank;
+
             rf_msg.magic = MAGIC;
             rf_msg.type = TYPE; // The type distinguishes the platform (here soil moisture hub)
             rf_msg.version = VERSION;
+            rf_msg.id = (mac_addr[0] << 8) | mac_addr[1];
+            rf_msg.rank = rank;
             rf_msg.sensor_calibration_bitmap = sensor_calibration_bitmap;
             rf_msg.sensor_connected_bitmap = sensor_connected_bitmap;
             memcpy(rf_msg.sensor_values, sensor_data, sizeof(sensor_data));
-
-            printf("TX\n");
 
             _udp_send(netif, ipv6_glob_addr, UDP_PORT, (uint8_t *) &rf_msg, sizeof(rf_msg));
         }
