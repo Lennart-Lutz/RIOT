@@ -4,6 +4,8 @@
 #include "ztimer.h"
 #include "thread.h"
 
+#include "periph/gpio.h"
+
 #include "net/gnrc.h"
 #include "net/gnrc/netif.h"
 #include "net/gnrc/netapi.h"
@@ -17,7 +19,7 @@
 
 #define TYPE_PLANT_HUB              0xA3
 
-#define UDP_PORT                    7421
+#define UDP_PORT                    0x7421
 
 /* ---- Global variables/structs ---- */
 
@@ -30,9 +32,12 @@ netif_t *netif = NULL;
 
 typedef struct
 {
-    uint8_t magic;
-    uint8_t type;
-    uint8_t version;
+    uint8_t magic; // Magic byte to identify the network
+    uint8_t type; // Type to distinguish different message formats
+    uint8_t version; // Version of the message format, can be used for future extensions
+    uint16_t id; // ID of the sending node (MAC address)
+    uint16_t rank; // RPL rank of the sending node
+    
     uint16_t sensor_connected_bitmap; // Bitmap indicating which sensors are connected
     uint16_t sensor_calibration_bitmap; // Bitmap indicating which sensors are calibrated
     uint16_t sensor_values[12]; // Latest sensor values for each port
@@ -40,15 +45,24 @@ typedef struct
 
 static void _parse_plant_hub_message(rf_plant_hub_message_t *msg)
 {
-    // For now, just print the received message
-    printf("Received message from plant hub:\n");
-    printf("  Sensor connected bitmap: 0x%04X\n", msg->sensor_connected_bitmap);
-    printf("  Sensor calibration bitmap: 0x%04X\n", msg->sensor_calibration_bitmap);
-    printf("  Sensor values:\n");
-    for (size_t i = 0; i < 12; i++)
-    {
-        printf("    Port %zu: %u\n", i, msg->sensor_values[i]);
+    // Parse the data and print to stdout in json format
+    printf("{");
+    printf("\"type\": %u, ", msg->type);
+    printf("\"version\": %u, ", msg->version);
+    printf("\"id\": %u, ", msg->id);
+    printf("\"rank\": %u, ", msg->rank);
+    printf("\"scon_bitmap\": %u, ", msg->sensor_connected_bitmap);
+    printf("\"scal_bitmap\": %u, ", msg->sensor_calibration_bitmap);
+
+    printf("\"sensor_values\": [");
+    for (int i = 0; i < 12; i++) {
+        printf("%u", msg->sensor_values[i]);
+        if (i < 11) {
+            printf(", ");
+        }
     }
+    printf("]");
+    printf("}\n");
 }
 
 /* ---- Receive section ---- */
@@ -64,9 +78,7 @@ static void _check_pkt_type_and_parse(gnrc_pktsnip_t *pkt)
     }
 
     // Parse message depending on its type
-    uint8_t pkt_type = data[1];
-
-    switch (pkt_type)
+    switch (data[1])
     {
     case TYPE_PLANT_HUB:
 
@@ -95,7 +107,11 @@ static void *receive_thread(void *arg)
 
     while (1)
     {
+        gpio_set(LED0_PIN); // Turn off red LED after processing
+
         msg_receive(&ipc_msg);
+
+        gpio_clear(LED0_PIN); // Turn on red LED to indicate message processing
 
         if (ipc_msg.type == GNRC_NETAPI_MSG_TYPE_RCV)
         {
@@ -117,6 +133,9 @@ int main(void)
 {
     // Initialize network interface
     netif = netif_iter(NULL);
+
+    // Initialize red LED
+    gpio_init(LED0_PIN, GPIO_OUT);
 
     // Parse global adress and initialize RPL root
     ipv6_addr_t ipv6_glob_addr;
